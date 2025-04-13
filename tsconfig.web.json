@@ -1,0 +1,20 @@
+{
+  "extends": "@electron-toolkit/tsconfig/tsconfig.web.json",
+  "include": [
+    "env.d.ts",
+    "src/renderer/src/**/*",
+    "src/renderer/src/**/*.vue",
+    "src/preload/*.d.ts"
+, "src/renderer/BackgroundRender.tsx", "src/renderer/App.vue", "src/renderer/minibar.vue", "src/renderer/main.ts", "src/renderer/LyricPlayer.tsx", "src/renderer/qmusic_api.ts", "src/renderer/qmusiclrcpaser.ts"  ],
+  "compilerOptions": {
+    "composite": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "baseUrl": ".",
+    "paths": {
+      "@renderer/*": [
+        "src/renderer/src/*"
+      ]
+    }
+  }
+}

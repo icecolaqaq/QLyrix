@@ -1,0 +1,34 @@
+appId: cn.ifengfeng.qlyrix
+productName: QLyrix
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+extraFiles:
+  - "./library"
+asarUnpack:
+  - resources/**
+win:
+  executableName: QLyrix
+  icon: ./build/icon.png
+nsis:
+  artifactName: ${name}-${version}.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  installerIcon: ./build/icon.ico
+  installerHeaderIcon: ./build/icon.ico
+  uninstallerIcon: ./build/uninstallerIcon.ico
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createStartMenuShortcut: true
+  perMachine: true
+  allowElevation: true
+appImage:
+  artifactName: ${name}-${version}.${ext}
+npmRebuild: false

@@ -1,0 +1,8 @@
+﻿QMusicSupport/obj
+QMusicSupport/bin
+QMusicSupport/.vs
+.vscode
+node_modules
+out
+dist
+yarn.lock
