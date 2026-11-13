@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -10,15 +11,21 @@ using System.Runtime.InteropServices;
 using System.Diagnostics;
 using System.Collections.Generic;
 using QMusicSupport.Win32Api;
+using QMusicSupport.Models;
+using QMusicSupport.Players;
 
 
 
 class Program
 {
-
-
     static async Task Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "test")
+        {
+            TestFavorite();
+            return;
+        }
+
         using (Mutex mutex = new Mutex(true, "QMusicSupport", out bool createdNew))
         {
             if (!createdNew)
@@ -27,7 +34,7 @@ class Program
                 Environment.Exit(0);
                 return;
             }
-
+           
             HttpListener httpListener;
             int port = 12689; // 初始端口
             try
@@ -141,7 +148,7 @@ class Program
                     try
                     {
                         await webSocket.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true, CancellationToken.None);
-                        await Task.Delay(500, cts.Token);
+                        await Task.Delay(300, cts.Token);
                     }
                     catch
                     {
@@ -190,13 +197,49 @@ class Program
                 Console.WriteLine($"已设置音量: {arg}");
                 break;
             case "progress":
+            {
                 TencentMusic tencentMusic = new TencentMusic();
-                tencentMusic.SetCurrentTrack(arg);
-                Console.WriteLine($"已设置进度: {arg}");
+                var seeked = tencentMusic.TrySetCurrentTrack(arg);
+                Console.WriteLine(seeked ? $"已设置进度: {arg}" : $"设置进度失败: {arg}");
+                break;
+            }
+            case "favorite":
+            case "like":
+                Control.AddToILike();
+                Console.WriteLine("Sent QQMusic add-to-favorites hotkey");
                 break;
             default:
                 Console.WriteLine($"未知命令: {command}，参数: {arg}");
                 break;
         }
     }
+
+    private static void TestFavorite()
+    {
+        var processes = Process.GetProcessesByName("QQMusic");
+        if (processes.Length == 0) { Console.WriteLine("QQMusic未运行"); return; }
+
+        var pid = processes[0].Id;
+        var process = new ProcessMemory(pid);
+        using var p = Process.GetProcessById(pid);
+        nint moduleBase = nint.Zero;
+        foreach (ProcessModule module in p.Modules)
+            if ("QQMusic.dll".Equals(module.ModuleName, StringComparison.OrdinalIgnoreCase))
+            { moduleBase = module.BaseAddress; break; }
+
+        // 检查多个可能的地址
+        var addrs = new (string name, int offset)[] {
+            ("0xC240BC", 0xC240BC),
+            ("0xC24BD8", 0xC24BD8),
+            ("0xC24BE0", 0xC24BE0),
+            ("0xC24B94", 0xC24B94),
+        };
+
+        foreach (var (name, offset) in addrs)
+        {
+            var val = process.ReadInt32(moduleBase + offset);
+            Console.WriteLine($"[{name}] = {val}");
+        }
+    }
+
 }

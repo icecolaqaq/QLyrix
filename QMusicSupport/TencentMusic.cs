@@ -22,7 +22,7 @@ namespace QMusicSupport
 
                 using var player = new Tencent(processes[0].Id);
                 PlayerInfo? info = player.GetPlayerInfo();
-                PlayerInfo minfo = (PlayerInfo)info;
+                PlayerInfo minfo = info.GetValueOrDefault();
                 return info == null ? 
                     new { state = 1 } :  //未检测到播放内容
                     new {
@@ -35,28 +35,34 @@ namespace QMusicSupport
                         duration = (int)(minfo.Duration * 1000),
                         pause = minfo.Pause,
                         quality = minfo.Quality,
+                        favorite = minfo.IsFavorite,
                         state = 2,
                     };
             }
-            catch (Exception ex)
+            catch
             {
                 return new { state = 3 };
             }
         }
 
-        public void SetCurrentTrack(int Schedule) {
+        public void SetCurrentTrack(int Schedule) => TrySetCurrentTrack(Schedule);
+
+        public bool TrySetCurrentTrack(int Schedule) {
             var processes = Process.GetProcessesByName("QQMusic");
             if (processes.Length == 0) {
                 Console.WriteLine("QQMusic未运行");
+                return false;
             }
             using var player = new Tencent(processes[0].Id);
             if (player.SetSongSchedule(Schedule)) {
 
                 Console.WriteLine($"设置播放进度为 {Schedule} 毫秒");
+                return true;
             }
             else
             {
                 Console.WriteLine("设置播放进度失败");
+                return false;
             }
         }
 

@@ -14,6 +14,7 @@ internal readonly record struct PlayerInfo
     public required string Url      { get; init; }
     public required int Quality { get; init; }
     public required bool Pause { get; init; }
+    public required bool IsFavorite { get; init; }
     public override int GetHashCode()
         => HashCode.Combine(Identity, Pause);
 }

@@ -5,4 +5,5 @@ QMusicSupport/.vs
 node_modules
 out
 dist
+src-tauri/target
 yarn.lock

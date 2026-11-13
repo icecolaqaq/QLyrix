@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -38,14 +38,37 @@ internal sealed class Tencent : IMusicPlayer, IDisposable
     private const string CurrentSongInfoPattern
         = "A2 ? ? ? ? A3 ? ? ? ? C7 05 ? ? ? ? ? ? ? ? A2 ? ? ? ? A3 ? ? ? ? C7 05 ? ? ? ? ? ? ? ? A2 ? ? ? ? A3";
 
+    // QQMusic 22.76+: SetSelectedQualityLevel checks 0/1 and 7/8/9/10 before writing SelectedQualityLevel
+    private const string SongQualitySetterPattern
+        = "55 8B EC 8B 45 0C 39 05 ? ? ? ? 74 ? 83 F8 01 74 04 85 C0";
+
+    private const string LegacySongQualitySetterPattern
+        = "55 8B EC 8B 45 ? 39 05 ? ? ? ? 74 ? A3 ? ? ? ? 8B 45 ? 68 ? ? ? ? 83 78 ? ? 8D 48 ? 74 ?";
+
+    // SelectedQualityLevel = 1; LastNormalSelectedQualityLevel = 1; LastHugeVipSelectedQualityLevel = 9;
+    private const string SongQualityInitPattern
+        = "C7 05 ? ? ? ? 01 00 00 00 C7 05 ? ? ? ? 01 00 00 00 C7 05 ? ? ? ? 09 00 00 00";
+
+    private const string SongQualityConfigKey = "SelectedQualityLevel";
+
     private const int StdStringSize = 0x18;
 
     private readonly nint _currentSongInfoAddress;
+    private readonly nint _songQualityAddress;
+    private readonly nint _qqMusicDllBase;
 
     private readonly int mpid;
     private readonly ProcessMemory _process;
+    private static readonly object AddressCacheLock = new();
+    private static int cachedPid;
+    private static nint cachedModuleBase;
+    private static nint cachedCurrentSongInfoAddress;
+    private static nint cachedSongQualityAddress;
 
-    nint address = 0x00;
+    private static readonly object FavoriteCacheLock = new();
+    private static uint favoriteCacheSongId;
+    private static bool favoriteCacheValue;
+    private static DateTime favoriteCacheTimeUtc = DateTime.MinValue;
 
     public Tencent(int pid)
     {
@@ -54,20 +77,51 @@ internal sealed class Tencent : IMusicPlayer, IDisposable
         
         foreach (ProcessModule module in p.Modules)
         {
-            if (!"QQMusic.dll".Equals(module.ModuleName))
+            if (!"QQMusic.dll".Equals(module.ModuleName, StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
 
             var process = new ProcessMemory(pid);
-            address = module.BaseAddress;
 
-            if (Memory.FindPattern(CurrentSongInfoPattern, pid, address, out var patternAddress))
+            _qqMusicDllBase = module.BaseAddress;
+
+            lock (AddressCacheLock)
+            {
+                if (cachedPid == pid
+                    && cachedModuleBase == module.BaseAddress
+                    && cachedCurrentSongInfoAddress != nint.Zero
+                    && cachedSongQualityAddress != nint.Zero)
+                {
+                    _currentSongInfoAddress = cachedCurrentSongInfoAddress;
+                    _songQualityAddress = cachedSongQualityAddress;
+                    _process = process;
+                    break;
+                }
+            }
+
+            if (Memory.FindPattern(CurrentSongInfoPattern, pid, module.BaseAddress, out var patternAddress))
             {
                 var currentSongAddress = process.ReadInt32(patternAddress, 1);
                 _currentSongInfoAddress = currentSongAddress;
             }
 
+            _songQualityAddress = ResolveSongQualityAddress(
+                process,
+                pid,
+                module.BaseAddress,
+                module.FileVersionInfo.FileVersion);
+
+            if (_currentSongInfoAddress != nint.Zero && _songQualityAddress != nint.Zero)
+            {
+                lock (AddressCacheLock)
+                {
+                    cachedPid = pid;
+                    cachedModuleBase = module.BaseAddress;
+                    cachedCurrentSongInfoAddress = _currentSongInfoAddress;
+                    cachedSongQualityAddress = _songQualityAddress;
+                }
+            }
 
             _process = process;
 
@@ -108,19 +162,23 @@ internal sealed class Tencent : IMusicPlayer, IDisposable
             Duration = GetSongDuration() * 0.001,
             Pause = IsPaused(),
             Quality = GetSongQulity(),
+            IsFavorite = IsFavorite(id),
 
             // lock
             Url = $"https://y.qq.com/n/ryqq/songDetail/{id}",
         };
     }
 
-    //获取音质 QQMusic 21.31 for Windows
+    //获取音质 QQMusic 21.92 for Windows
     private int GetSongQulity() 
     {
-        var ptr = address + 0x00552510;
-        ptr = _process.ReadInt32(ptr);
-        var quality = _process.ReadInt32(ptr); //0：标准 1：HQ高品质 2：SQ无损 10：臻品全景声
-        return quality;
+        if (_songQualityAddress == nint.Zero)
+        {
+            return -1;
+        }
+
+        var quality = _process.ReadInt32(_songQualityAddress); // 0：标准 1：HQ 2：SQ 6：Hi-Res 7/8/9/10：臻品
+        return IsSupportedQualityValue(quality) ? quality : -1;
     }
     private uint GetSongIdentity()
         => _process.ReadUInt32(_currentSongInfoAddress, StdStringSize * 4);
@@ -131,9 +189,186 @@ internal sealed class Tencent : IMusicPlayer, IDisposable
     private int GetSongSchedule()
         => _process.ReadInt32(_currentSongInfoAddress, (StdStringSize * 4) + 12);
 
+    private bool IsFavorite(uint songId)
+    {
+        lock (FavoriteCacheLock)
+        {
+            if (favoriteCacheSongId == songId && DateTime.UtcNow - favoriteCacheTimeUtc < TimeSpan.FromSeconds(1))
+            {
+                return favoriteCacheValue;
+            }
+        }
+
+        var value = ReadFavoriteFlag();
+        lock (FavoriteCacheLock)
+        {
+            favoriteCacheSongId = songId;
+            favoriteCacheValue = value;
+            favoriteCacheTimeUtc = DateTime.UtcNow;
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// 通过搜索getter函数的代码模式来定位喜欢状态标志。
+    /// getter函数特征: test ecx,ecx; jnz +0x25; push 1D6h; ... ; mov eax,[dword_10C240BC]
+    /// </summary>
+    private bool ReadFavoriteFlag()
+    {
+        if (_qqMusicDllBase == nint.Zero) return false;
+
+        var textStart = _qqMusicDllBase + 0x1000;
+        var textSize = 0x97B000;
+        var textBytes = _process.ReadBytes(textStart, textSize);
+
+        // 搜索特征: test ecx,ecx (85 C9) + jnz short 25 (75 25) + push 1D6h (68 D6 01 00 00)
+        byte[] pattern = { 0x85, 0xC9, 0x75, 0x25, 0x68, 0xD6, 0x01, 0x00, 0x00 };
+
+        for (int i = 0; i < textBytes.Length - pattern.Length - 30; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < pattern.Length; j++)
+            {
+                if (textBytes[i + j] != pattern[j]) { match = false; break; }
+            }
+
+            if (match)
+            {
+                Console.WriteLine($"[DEBUG] Found pattern at text+0x{i:X}");
+                // 找到特征，在后面搜索 A1 指令 (mov eax, [addr])
+                for (int k = pattern.Length; k < 60; k++)
+                {
+                    if (textBytes[i + k] == 0xA1)
+                    {
+                        var dataAddr = BitConverter.ToUInt32(textBytes, i + k + 1);
+                        var moduleBase = (uint)_qqMusicDllBase;
+                        var relativeAddr = (int)(dataAddr - moduleBase);
+                        Console.WriteLine($"[DEBUG]   Found A1 at offset +0x{k:X}, data_addr=0x{dataAddr:X8} (rel=0x{relativeAddr:X})");
+
+                        // 检查是否在.data段范围内
+                        if (relativeAddr >= 0xBF9000 && relativeAddr < 0xC97000)
+                        {
+                            var val = _process.ReadInt32((nint)dataAddr);
+                            Console.WriteLine($"[DEBUG]   Value={val}");
+                            if (val == 0 || val == 1)
+                            {
+                                return val != 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Console.WriteLine("[DEBUG] No pattern match found");
+        return false;
+    }
+
     public bool SetSongSchedule(int schedule)
     {
-        return _ = Memory.SetQQMusicPlayProgress(schedule);
+        var seeked = Memory.SetQQMusicPlayProgress(schedule, mpid)
+                     || WindowsMediaSession.TrySetPosition(mpid, schedule).GetAwaiter().GetResult();
+        if (seeked && _currentSongInfoAddress != nint.Zero)
+        {
+            _process.WriteInt32(_currentSongInfoAddress + (StdStringSize * 4) + 12, Math.Max(0, schedule));
+        }
+
+        return seeked;
+    }
+
+    private static nint ResolveSongQualityAddress(
+        ProcessMemory process,
+        int pid,
+        nint moduleBase,
+        string? moduleVersion)
+    {
+        var configAddress = ResolveSongQualityAddressByConfigKey(process, pid, moduleBase);
+        if (configAddress != nint.Zero)
+        {
+            return configAddress;
+        }
+
+        if (Memory.FindPattern(SongQualitySetterPattern, pid, moduleBase, out var setterPatternAddress))
+        {
+            var address = Memory.ReadAbsoluteAddress32(process, setterPatternAddress, 8);
+            if (Memory.IsAddressInModule(address, moduleBase)
+                && IsSupportedQualityValue(process.ReadInt32(address)))
+            {
+                return address;
+            }
+        }
+
+        if (Memory.FindPattern(SongQualityInitPattern, pid, moduleBase, out var initPatternAddress))
+        {
+            var address = Memory.ReadAbsoluteAddress32(process, initPatternAddress, 2);
+            if (Memory.IsAddressInModule(address, moduleBase)
+                && IsSupportedQualityValue(process.ReadInt32(address)))
+            {
+                return address;
+            }
+        }
+
+        if (string.Equals(moduleVersion?.Trim(), "21.92", StringComparison.OrdinalIgnoreCase)
+            && Memory.FindPattern(LegacySongQualitySetterPattern, pid, moduleBase, out var legacySetterAddress))
+        {
+            var address = Memory.ReadAbsoluteAddress32(process, legacySetterAddress, 8);
+            if (Memory.IsAddressInModule(address, moduleBase)
+                && IsSupportedQualityValue(process.ReadInt32(address)))
+            {
+                return address;
+            }
+        }
+
+        return nint.Zero;
+    }
+
+    private static bool IsSupportedQualityValue(int value)
+        => value is 0 or 1 or 2 or 6 or 7 or 8 or 9 or 10;
+
+    private static nint ResolveSongQualityAddressByConfigKey(ProcessMemory process, int pid, nint moduleBase)
+    {
+        // Match null-terminated "SelectedQualityLevel\0" and skip substring matches such as
+        // "LastHugeVipSelectedQualityLevel" or "LastNormalSelectedQualityLevel".
+        var keyPattern = Memory.BytesToPattern(Encoding.Unicode.GetBytes($"{SongQualityConfigKey}\0"));
+        var keyAddresses = Memory.FindPatternInModuleAll(keyPattern, pid, moduleBase);
+
+        foreach (var keyAddress in keyAddresses)
+        {
+            if (keyAddress > moduleBase + 2 && process.ReadInt16(keyAddress, -2) != 0)
+            {
+                continue;
+            }
+
+            var refPattern = Memory.BytesToPattern(BitConverter.GetBytes((uint)keyAddress));
+            foreach (var refAddress in Memory.FindTextPatternAll(refPattern, pid, moduleBase))
+            {
+                var start = refAddress - 0x20;
+                var window = process.ReadBytes(start, 0x60);
+
+                for (var i = 0; i <= window.Length - 6; i++)
+                {
+                    if (window[i] != 0xFF || window[i + 1] != 0x35)
+                    {
+                        continue;
+                    }
+
+                    var candidate = (nint)(long)BitConverter.ToUInt32(window, i + 2);
+                    if (!Memory.IsAddressInModule(candidate, moduleBase))
+                    {
+                        continue;
+                    }
+
+                    var value = process.ReadInt32(candidate);
+                    if (IsSupportedQualityValue(value))
+                    {
+                        return candidate;
+                    }
+                }
+            }
+        }
+
+        return nint.Zero;
     }
 
     private string GetSongName()
@@ -178,6 +413,7 @@ internal sealed class Tencent : IMusicPlayer, IDisposable
 
     public void Dispose()
     {
+        _process?.Dispose();
         GC.SuppressFinalize(this);
     }
 

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "QLyrix",
+  "version": "2.0.0",
+  "identifier": "com.icecola.qlyrix",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "QLyrix",
+        "url": "index.html?win=main",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 500,
+        "minHeight": 350,
+        "center": true,
+        "resizable": true,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "visible": true
+      },
+      {
+        "label": "island",
+        "title": "QLyrix Island",
+        "url": "index.html?win=island",
+        "width": 440,
+        "height": 230,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false
+      },
+      {
+        "label": "settings",
+        "title": "QLyrix 设置",
+        "url": "index.html?win=settings",
+        "width": 780,
+        "height": 560,
+        "minWidth": 620,
+        "minHeight": 450,
+        "center": true,
+        "decorations": false,
+        "transparent": true,
+        "resizable": true,
+        "shadow": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "../library/QMusicSupport/*": "library/QMusicSupport/"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ]
+  }
+}

@@ -20,6 +20,9 @@ namespace QMusicSupport.Win32Api
         private const byte VK_MEDIA_NEXT_TRACK = 0xB0;
         private const byte VK_MEDIA_PREV_TRACK = 0xB1;
         private const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
+        private const byte VK_CONTROL = 0x11;
+        private const byte VK_MENU = 0x12;
+        private const byte VK_V = 0x56;
 
 
         [DllImport("user32.dll")]
@@ -216,6 +219,16 @@ namespace QMusicSupport.Win32Api
         {
             keybd_event(VK_MEDIA_PREV_TRACK, 0, KEYEVENTF_KEYDOWN, 0);
             keybd_event(VK_MEDIA_PREV_TRACK, 0, KEYEVENTF_KEYUP, 0);
+        }
+
+        public static void AddToILike()
+        {
+            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYDOWN, 0);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYDOWN, 0);
+            keybd_event(VK_V, 0, KEYEVENTF_KEYDOWN, 0);
+            keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
         }
 
     }
